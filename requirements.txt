@@ -1,0 +1,10 @@
+imutils==0.5.3
+opencv-python==4.1.2.30
+WeasyPrint
+cairocffi
+editdistance
+pydot
+matplotlib
+graphviz
+pydot
+pandas
