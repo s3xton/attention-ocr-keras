@@ -8,3 +8,4 @@ matplotlib
 graphviz
 pydot
 pandas
+tensorflow-addons==0.8.2

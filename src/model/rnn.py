@@ -25,7 +25,6 @@ class ChaRNN(layers.Layer):
                                               dtype='float32'),
                                       trainable=True)
 
-    @tf.function
     def call(self, inputs):
         f_pool, ground_truth = inputs
         batch_size, _, _ = f_pool.shape
@@ -60,7 +59,6 @@ class ChaRNN(layers.Layer):
         print(sequence_output.shape)
         return sequence_output, state
 
-    @tf.function
     def get_image_feature(self, f_pool, char_index):
         """Returns a subset of image features for a character.
         Args:
@@ -79,7 +77,6 @@ class ChaRNN(layers.Layer):
         feature = tf.reshape(f_slice, [batch_size, -1])
         return feature
 
-    @tf.function
     def char_logit(self, inputs):
         """Creates logits for a character if required.
         Args:
@@ -93,7 +90,6 @@ class ChaRNN(layers.Layer):
         #     self._char_logits[char_index] = inputs * self._softmax_w + self._softmax_b
         return tf.matmul(inputs, self._softmax_w) + self._softmax_b
 
-    @tf.function
     def char_one_hot(self, logit):
         """Creates one hot encoding for a logit of a character.
         Args:

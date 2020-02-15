@@ -1,23 +1,31 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 import logging
 import tensorflow as tf
-
+import tensorflow_addons as tfa
+import utils
+from model_parameters import default_mparams, OutputEndpoints
 from tensorflow.keras.layers import Dense, Flatten, Conv2D
 from tensorflow.keras import Model
-
+from charset_mapper import CharsetMapper
 from rnn import ChaRNN
 
 
 class ReaderModel(tf.keras.Model):
-    def __init__(self, input_shape, seq_length, rnn_size, num_char_classes, is_training=True):
+    def __init__(self, input_shape, seq_length, rnn_size, charset, ground_truth=None):
         super(ReaderModel, self).__init__()
+        self._mparams = default_mparams()
+        self.num_char_classes = len(charset)
+        self.seq_length = seq_length
+        self.charset = charset
+        self.ground_truth = ground_truth
+
         self.feature_enc = tf.keras.applications.InceptionResNetV2(
             weights='imagenet', input_shape=input_shape, include_top=False)
         self.feature_enc.outputs = [
             self.feature_enc.get_layer('mixed_6a').output]
-        self.rnn = ChaRNN(rnn_size, seq_length, num_char_classes)
+        self.rnn = ChaRNN(rnn_size, self.seq_length, self.num_char_classes)
+        self.character_mapper = CharsetMapper(self.charset)
 
-    @tf.function
     def call(self, x):
         print('Input shape: {}'.format(x.shape))
         f = self.feature_enc(x)
@@ -26,12 +34,21 @@ class ReaderModel(tf.keras.Model):
         print('Feature enc with OH coords shape: {}'.format(f_enc.shape))
         f_pool = self.pool_views(f_enc)
         print('Pooled feature enc shape: {}'.format(f_pool.shape))
-        logits, state = self.rnn((f_pool, None))
-        print('Char logits shape: {}'.format(logits.shape))
-        # predicted_chars, chars_log_prob, predicted_scores = (self.char_predictions(chars_logit))
-        return logits
+        chars_logit, _ = self.rnn((f_pool, self.ground_truth))
+        print('Char chars_logit shape: {}'.format(chars_logit.shape))
+        predicted_chars, chars_log_prob, predicted_scores = (
+            self.char_predictions(chars_logit))
+        print('Predicted scores shape: {}'.format(predicted_scores.shape))
 
-    @tf.function
+        predicted_text = self.character_mapper.get_text(predicted_chars)
+
+        return OutputEndpoints(
+            chars_logit=chars_logit,
+            chars_log_prob=chars_log_prob,
+            predicted_chars=predicted_chars,
+            predicted_scores=predicted_scores,
+            predicted_text=predicted_text)
+
     def encode_coords(self, f):
         """Adds one-hot encoding of coordinates to different views in the networks.
         For each "pixel" of a feature map it adds a onehot encoded x and y
@@ -49,7 +66,6 @@ class ReaderModel(tf.keras.Model):
         loc = tf.tile(tf.expand_dims(loc, 0), [batch_size, 1, 1, 1])
         return tf.concat([f, loc], 3)
 
-    @tf.function
     def pool_views(self, f_enc):
         """Combines output of multiple convolutional towers into a single tensor.
         It stacks towers one on top another (in height dim) in a 4x1 grid.
@@ -63,7 +79,6 @@ class ReaderModel(tf.keras.Model):
         feature_size = f_enc.shape[3]
         return tf.reshape(f_enc, [batch_size, -1, feature_size])
 
-    @tf.function
     def char_predictions(self, chars_logit):
         """Returns confidence scores (softmax values) for predicted characters.
         Args:
@@ -80,10 +95,115 @@ class ReaderModel(tf.keras.Model):
             with shape [batch_size x seq_length].
         """
         log_prob = utils.logits_to_log_prob(chars_logit)
-        ids = tf.to_int32(tf.argmax(log_prob, axis=2), name='predicted_chars')
-        mask = tf.cast(
-        slim.one_hot_encoding(ids, self._params.num_char_classes), tf.bool)
+        ids = tf.cast(tf.argmax(log_prob, axis=2),
+                      tf.int32, name='predicted_chars')
+        mask = tf.cast(tf.one_hot(ids, self.num_char_classes), tf.bool)
         all_scores = tf.nn.softmax(chars_logit)
         selected_scores = tf.boolean_mask(all_scores, mask, name='char_scores')
-        scores = tf.reshape(selected_scores, shape=(-1, self._params.seq_length))
+        scores = tf.reshape(selected_scores, shape=(-1, self.seq_length))
         return ids, log_prob, scores
+
+    def create_loss(self, labels, chars_logit):
+        """Creates all losses required to train the model.
+        Args:
+        data: InputEndpoints namedtuple.
+        endpoints: Model namedtuple.
+        Returns:
+        Total loss.
+        """
+        # NOTE: the return value of ModelLoss is not used directly for the
+        # gradient computation because under the hood it calls slim.losses.AddLoss,
+        # which registers the loss in an internal collection and later returns it
+        # as part of GetTotalLoss. We need to use total loss because model may have
+        # multiple losses including regularization losses.
+        print(labels.shape)
+        labels = self.character_mapper.get_ids(labels)
+        print(labels.shape)
+        self.sequence_loss_fn(chars_logit, labels)
+        total_loss = tf.compat.v1.losses.get_total_loss()
+        tf.summary.scalar('TotalLoss', total_loss)
+        return total_loss
+
+    def sequence_loss_fn(self, chars_logits, chars_labels):
+        """Loss function for char sequence.
+        Depending on values of hyper parameters it applies label smoothing and can
+        also ignore all null chars after the first one.
+        Args:
+        chars_logits: logits for predicted characters,
+            shape=[batch_size, seq_length, num_char_classes];
+        chars_labels: ground truth ids of characters,
+            shape=[batch_size, seq_length];
+        mparams: method hyper parameters.
+        Returns:
+        A Tensor with shape [batch_size] - the log-perplexity for each sequence.
+        """
+        mparams = self._mparams['sequence_loss_fn']
+        if mparams.label_smoothing > 0:
+            smoothed_one_hot_labels = self.label_smoothing_regularization(
+                chars_labels, mparams.label_smoothing)
+            labels_list = tf.unstack(smoothed_one_hot_labels, axis=1)
+        else:
+            # NOTE: in case of sparse softmax we are not using one-hot
+            # encoding.
+            labels_list = tf.unstack(chars_labels, axis=1)
+
+        batch_size, seq_length, _ = chars_logits.shape.as_list()
+        if mparams.ignore_nulls:
+            weights = tf.ones((batch_size, seq_length), dtype=tf.float32)
+        else:
+            # Suppose that reject character is the last in the charset.
+            reject_char = tf.constant(
+                self.num_char_classes - 1,
+                shape=(batch_size, seq_length),
+                dtype=tf.int64)
+            known_char = tf.not_equal(chars_labels, reject_char)
+            weights = tf.cast(known_char, dtype=tf.float32)
+
+        logits_list = tf.unstack(chars_logits, axis=1)
+        weights_list = tf.unstack(weights, axis=1)
+        loss = tfa.seq2seq.sequence_los(
+            logits_list,
+            labels_list,
+            weights_list,
+            softmax_loss_function=self.get_softmax_loss_fn(
+                mparams.label_smoothing),
+            average_across_timesteps=mparams.average_across_timesteps)
+        tf.losses.add_loss(loss)
+        return loss
+
+    def label_smoothing_regularization(self, chars_labels, weight=0.1):
+        """Applies a label smoothing regularization.
+        Uses the same method as in https://arxiv.org/abs/1512.00567.
+        Args:
+        chars_labels: ground truth ids of charactes,
+            shape=[batch_size, seq_length];
+        weight: label-smoothing regularization weight.
+        Returns:
+        A sensor with the same shape as the input.
+        """
+        one_hot_labels = tf.one_hot(
+            chars_labels, depth=self.num_char_classes, axis=-1)
+        pos_weight = 1.0 - weight
+        neg_weight = weight / self.num_char_classes
+        return one_hot_labels * pos_weight + neg_weight
+
+    def get_softmax_loss_fn(self, label_smoothing):
+        """Returns sparse or dense loss function depending on the label_smoothing.
+            Args:
+            label_smoothing: weight for label smoothing
+            Returns:
+            a function which takes labels and predictions as arguments and returns
+            a softmax loss for the selected type of labels (sparse or dense).
+            """
+        if label_smoothing > 0:
+
+            def loss_fn(labels, logits):
+                return (tf.nn.softmax_cross_entropy_with_logits(
+                    logits=logits, labels=labels))
+        else:
+
+            def loss_fn(labels, logits):
+                return tf.nn.sparse_softmax_cross_entropy_with_logits(
+                    logits=logits, labels=labels)
+
+        return loss_fn
