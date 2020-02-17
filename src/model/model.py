@@ -25,6 +25,7 @@ class ReaderModel(tf.keras.Model):
         self.rnn = ChaRNN(rnn_size, self.seq_length, self.num_char_classes)
         self.character_mapper = CharsetMapper(self.charset, self.seq_length)
 
+    @tf.function
     def call(self, x):
         input_image, ground_truth = x
         print('Input shape: {}'.format(input_image.shape))
@@ -103,6 +104,7 @@ class ReaderModel(tf.keras.Model):
         scores = tf.reshape(selected_scores, shape=(-1, self.seq_length))
         return ids, log_prob, scores
 
+    @tf.function
     def create_loss(self, labels, chars_logit):
         """Creates all losses required to train the model.
         Args:
@@ -171,7 +173,9 @@ class ReaderModel(tf.keras.Model):
             softmax_loss_function=self.get_softmax_loss_fn(
                 mparams.label_smoothing),
             average_across_timesteps=mparams.average_across_timesteps)
-        tf.compat.v1.losses.add_loss(loss)
+        print(loss.shape)
+        print(loss)
+        tf.compat.v1.losses.add_loss(tf.reduce_sum(loss))
         return loss
 
     def label_smoothing_regularization(self, chars_labels, weight=0.1):

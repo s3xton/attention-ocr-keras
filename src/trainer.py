@@ -8,9 +8,10 @@ import tensorflow_addons as tfa
 
 class Trainer(object):
     def __init__(self):
-        self.optimizer = tf.keras.optimizers.Adam()
+        self.optimizer = tf.compat.v1.train.MomentumOptimizer(learning_rate=0.004,
+                                                              momentum=0.9)
         self.loss_history = []
-        chars = 'abcdefghijklmnopqrstuvwxyz'
+        chars = '?abcdefghijklmnopqrstuvwxyz'
         charset = dict(enumerate(chars))
         self.model = ReaderModel(input_shape=(240, 240, 3),
                                  seq_length=8,

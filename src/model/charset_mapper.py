@@ -20,7 +20,7 @@ class CharsetMapper(object):
             tf.lookup.KeyValueTensorInitializer(ids_tensor, chars_tensor, key_dtype=tf.int64, value_dtype=tf.string), default_character)
 
         self.table_text = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(chars_tensor, ids_tensor, key_dtype=tf.string, value_dtype=tf.int64), -1)
+            tf.lookup.KeyValueTensorInitializer(chars_tensor, ids_tensor, key_dtype=tf.string, value_dtype=tf.int64), 0)
 
     def get_text(self, ids):
         """Returns a string corresponding to a sequence of character ids.

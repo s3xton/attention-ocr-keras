@@ -25,6 +25,7 @@ class ChaRNN(layers.Layer):
                                               dtype='float32'),
                                       trainable=True)
 
+    @tf.function
     def call(self, inputs):
         f_pool, ground_truth = inputs
         batch_size, _, _ = f_pool.shape
