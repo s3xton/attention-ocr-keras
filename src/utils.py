@@ -23,12 +23,12 @@ def logits_to_log_prob(logits):
     log_probs = tf.math.subtract(safe_logits, tf.math.log(sum_exp))
     return log_probs
 
-def get_label(file_path, max_seq_length):
+def get_label(file_path):
   # convert the path to a list of path components
   parts = tf.strings.split(file_path, os.path.sep)
   label = tf.strings.split(parts[-1], '.')[0]
   # The second to last is the class-directory
-  return label.ljust(max_seq_length, '?')
+  return label
 
 def decode_img(img):
   # convert the compressed string to a 3D uint8 tensor
@@ -38,8 +38,8 @@ def decode_img(img):
   # resize the image to the desired size.
   return tf.image.resize(img, [240, 240])
 
-def process_path(file_path, max_seq_length=8):
-  label = get_label(file_path, max_seq_length)
+def process_path(file_path):
+  label = get_label(file_path)
   # load the raw data from the file as a string
   img = tf.io.read_file(file_path)
   img = decode_img(img)

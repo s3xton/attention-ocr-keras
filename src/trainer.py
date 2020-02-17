@@ -12,14 +12,14 @@ class Trainer(object):
         self.loss_history = []
         chars = 'abcdefghijklmnopqrstuvwxyz'
         charset = dict(enumerate(chars))
-        self.model = ReaderModel(input_shape=(120, 120, 3),
-                                 seq_length=20,
+        self.model = ReaderModel(input_shape=(240, 240, 3),
+                                 seq_length=8,
                                  rnn_size=10,
                                  charset=charset)
 
     def train_step(self, images, labels):
         with tf.GradientTape() as tape:
-            chars_logit = self.model(images).chars_logit
+            chars_logit = self.model((images, None)).chars_logit
             print('Model output')
             # Add asserts to check the shape of the output.
             # tf.debugging.assert_equal(chars_logit.shape, (32, 20, 26))

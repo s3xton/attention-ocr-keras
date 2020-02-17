@@ -11,30 +11,30 @@ from rnn import ChaRNN
 
 
 class ReaderModel(tf.keras.Model):
-    def __init__(self, input_shape, seq_length, rnn_size, charset, ground_truth=None):
+    def __init__(self, input_shape, seq_length, rnn_size, charset):
         super(ReaderModel, self).__init__()
         self._mparams = default_mparams()
         self.num_char_classes = len(charset)
         self.seq_length = seq_length
         self.charset = charset
-        self.ground_truth = ground_truth
 
         self.feature_enc = tf.keras.applications.InceptionResNetV2(
             weights='imagenet', input_shape=input_shape, include_top=False)
         self.feature_enc.outputs = [
             self.feature_enc.get_layer('mixed_6a').output]
         self.rnn = ChaRNN(rnn_size, self.seq_length, self.num_char_classes)
-        self.character_mapper = CharsetMapper(self.charset)
+        self.character_mapper = CharsetMapper(self.charset, self.seq_length)
 
     def call(self, x):
-        print('Input shape: {}'.format(x.shape))
-        f = self.feature_enc(x)
+        input_image, ground_truth = x
+        print('Input shape: {}'.format(input_image.shape))
+        f = self.feature_enc(input_image)
         print('Feature enc shape: {}'.format(f.shape))
         f_enc = self.encode_coords(f)
         print('Feature enc with OH coords shape: {}'.format(f_enc.shape))
         f_pool = self.pool_views(f_enc)
         print('Pooled feature enc shape: {}'.format(f_pool.shape))
-        chars_logit, _ = self.rnn((f_pool, self.ground_truth))
+        chars_logit, _ = self.rnn((f_pool, ground_truth))
         print('Char chars_logit shape: {}'.format(chars_logit.shape))
         predicted_chars, chars_log_prob, predicted_scores = (
             self.char_predictions(chars_logit))
@@ -116,9 +116,8 @@ class ReaderModel(tf.keras.Model):
         # which registers the loss in an internal collection and later returns it
         # as part of GetTotalLoss. We need to use total loss because model may have
         # multiple losses including regularization losses.
-        print(labels.shape)
         labels = self.character_mapper.get_ids(labels)
-        print(labels.shape)
+        print(labels)
         self.sequence_loss_fn(chars_logit, labels)
         total_loss = tf.compat.v1.losses.get_total_loss()
         tf.summary.scalar('TotalLoss', total_loss)
@@ -141,11 +140,13 @@ class ReaderModel(tf.keras.Model):
         if mparams.label_smoothing > 0:
             smoothed_one_hot_labels = self.label_smoothing_regularization(
                 chars_labels, mparams.label_smoothing)
-            labels_list = tf.unstack(smoothed_one_hot_labels, axis=1)
+            # labels_list = tf.unstack(smoothed_one_hot_labels, axis=1)
+            labels_list = smoothed_one_hot_labels
         else:
             # NOTE: in case of sparse softmax we are not using one-hot
             # encoding.
-            labels_list = tf.unstack(chars_labels, axis=1)
+            # labels_list = tf.unstack(chars_labels, axis=1)
+            labels_list = chars_labels
 
         batch_size, seq_length, _ = chars_logits.shape.as_list()
         if mparams.ignore_nulls:
@@ -159,16 +160,18 @@ class ReaderModel(tf.keras.Model):
             known_char = tf.not_equal(chars_labels, reject_char)
             weights = tf.cast(known_char, dtype=tf.float32)
 
-        logits_list = tf.unstack(chars_logits, axis=1)
-        weights_list = tf.unstack(weights, axis=1)
-        loss = tfa.seq2seq.sequence_los(
+        # logits_list = tf.unstack(chars_logits, axis=1)
+        # weights_list = tf.unstack(weights, axis=1)
+        logits_list = chars_logits
+        weights_list = weights
+        loss = tfa.seq2seq.sequence_loss(
             logits_list,
             labels_list,
             weights_list,
             softmax_loss_function=self.get_softmax_loss_fn(
                 mparams.label_smoothing),
             average_across_timesteps=mparams.average_across_timesteps)
-        tf.losses.add_loss(loss)
+        tf.compat.v1.losses.add_loss(loss)
         return loss
 
     def label_smoothing_regularization(self, chars_labels, weight=0.1):
