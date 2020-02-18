@@ -22,25 +22,30 @@ class ReaderModel(tf.keras.Model):
             weights='imagenet', input_shape=input_shape, include_top=False)
         self.feature_enc.outputs = [
             self.feature_enc.get_layer('mixed_6a').output]
+        self.feature_enc.trainable = False
         self.rnn = ChaRNN(rnn_size, self.seq_length, self.num_char_classes)
         self.character_mapper = CharsetMapper(self.charset, self.seq_length)
 
-    @tf.function
+
     def call(self, x):
+        # Split out the ground truth. During inference this is None,
+        # during training it contains labels used for autoregression
         input_image, ground_truth = x
-        print('Input shape: {}'.format(input_image.shape))
+
+        # Encode the image using resnet
         f = self.feature_enc(input_image)
-        print('Feature enc shape: {}'.format(f.shape))
+        
+        # Add the spacial coords
         f_enc = self.encode_coords(f)
-        print('Feature enc with OH coords shape: {}'.format(f_enc.shape))
         f_pool = self.pool_views(f_enc)
-        print('Pooled feature enc shape: {}'.format(f_pool.shape))
+        
+        # Generate the logits from the sequential model
+        if ground_truth is not None:
+            ground_truth = self.character_mapper.get_ids(ground_truth)
         chars_logit, _ = self.rnn((f_pool, ground_truth))
-        print('Char chars_logit shape: {}'.format(chars_logit.shape))
+        # Interpret the logits
         predicted_chars, chars_log_prob, predicted_scores = (
             self.char_predictions(chars_logit))
-        print('Predicted scores shape: {}'.format(predicted_scores.shape))
-
         predicted_text = self.character_mapper.get_text(predicted_chars)
 
         return OutputEndpoints(
@@ -104,8 +109,8 @@ class ReaderModel(tf.keras.Model):
         scores = tf.reshape(selected_scores, shape=(-1, self.seq_length))
         return ids, log_prob, scores
 
-    @tf.function
-    def create_loss(self, labels, chars_logit):
+
+    def loss(self, labels, chars_logit):
         """Creates all losses required to train the model.
         Args:
         data: InputEndpoints namedtuple.
@@ -113,17 +118,11 @@ class ReaderModel(tf.keras.Model):
         Returns:
         Total loss.
         """
-        # NOTE: the return value of ModelLoss is not used directly for the
-        # gradient computation because under the hood it calls slim.losses.AddLoss,
-        # which registers the loss in an internal collection and later returns it
-        # as part of GetTotalLoss. We need to use total loss because model may have
-        # multiple losses including regularization losses.
+        batch_size, _, _ = chars_logit.shape
         labels = self.character_mapper.get_ids(labels)
-        print(labels)
-        self.sequence_loss_fn(chars_logit, labels)
-        total_loss = tf.compat.v1.losses.get_total_loss()
-        tf.summary.scalar('TotalLoss', total_loss)
-        return total_loss
+        labels = tf.one_hot(labels, depth=self.num_char_classes)
+        return tf.nn.softmax_cross_entropy_with_logits(logits=chars_logit, labels=labels, axis=2), labels
+
 
     def sequence_loss_fn(self, chars_logits, chars_labels):
         """Loss function for char sequence.
@@ -173,9 +172,6 @@ class ReaderModel(tf.keras.Model):
             softmax_loss_function=self.get_softmax_loss_fn(
                 mparams.label_smoothing),
             average_across_timesteps=mparams.average_across_timesteps)
-        print(loss.shape)
-        print(loss)
-        tf.compat.v1.losses.add_loss(tf.reduce_sum(loss))
         return loss
 
     def label_smoothing_regularization(self, chars_labels, weight=0.1):

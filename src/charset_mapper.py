@@ -38,5 +38,4 @@ class CharsetMapper(object):
         char_seq = tf.concat([char_seq, [['?'] * self.max_sequence_length]], axis=0)
         dense_seq = tf.sparse.to_dense(char_seq.to_sparse(), default_value='?')
         dense_seq = dense_seq[:-1, :]
-
         return self.table_text.lookup(dense_seq)
