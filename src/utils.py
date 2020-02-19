@@ -1,4 +1,5 @@
 import tensorflow as tf
+from tensorflow.keras.applications.inception_resnet_v2 import preprocess_input
 import os
 
 def logits_to_log_prob(logits):
@@ -36,7 +37,7 @@ def decode_img(img):
   # Use `convert_image_dtype` to convert to floats in the [0,1] range.
   img = tf.image.convert_image_dtype(img, tf.float32)
   # resize the image to the desired size.
-  return tf.image.resize(img, [240, 240])
+  return preprocess_input(tf.image.resize(img, [240, 240]))
 
 def process_path(file_path):
   label = get_label(file_path)

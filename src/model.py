@@ -6,6 +6,7 @@ import utils
 from model_parameters import default_mparams, OutputEndpoints
 from tensorflow.keras.layers import Dense, Flatten, Conv2D
 from tensorflow.keras import Model
+from tensorflow.keras.applications.inception_resnet_v2 import InceptionResNetV2, preprocess_input
 from charset_mapper import CharsetMapper
 from rnn import ChaRNN
 
@@ -18,14 +19,13 @@ class ReaderModel(tf.keras.Model):
         self.seq_length = seq_length
         self.charset = charset
 
-        self.feature_enc = tf.keras.applications.InceptionResNetV2(
+        self.feature_enc = InceptionResNetV2(
             weights='imagenet', input_shape=input_shape, include_top=False)
         self.feature_enc.outputs = [
             self.feature_enc.get_layer('mixed_6a').output]
         self.feature_enc.trainable = False
         self.rnn = ChaRNN(rnn_size, self.seq_length, self.num_char_classes)
         self.character_mapper = CharsetMapper(self.charset, self.seq_length)
-
 
     def call(self, x):
         # Split out the ground truth. During inference this is None,
@@ -34,11 +34,11 @@ class ReaderModel(tf.keras.Model):
 
         # Encode the image using resnet
         f = self.feature_enc(input_image)
-        
+
         # Add the spacial coords
         f_enc = self.encode_coords(f)
         f_pool = self.pool_views(f_enc)
-        
+
         # Generate the logits from the sequential model
         if ground_truth is not None:
             ground_truth = self.character_mapper.get_ids(ground_truth)
@@ -109,8 +109,7 @@ class ReaderModel(tf.keras.Model):
         scores = tf.reshape(selected_scores, shape=(-1, self.seq_length))
         return ids, log_prob, scores
 
-
-    def loss(self, labels, chars_logit):
+    def loss(self, labels, chars_logits):
         """Creates all losses required to train the model.
         Args:
         data: InputEndpoints namedtuple.
@@ -118,11 +117,9 @@ class ReaderModel(tf.keras.Model):
         Returns:
         Total loss.
         """
-        batch_size, _, _ = chars_logit.shape
         labels = self.character_mapper.get_ids(labels)
-        labels = tf.one_hot(labels, depth=self.num_char_classes)
-        return tf.nn.softmax_cross_entropy_with_logits(logits=chars_logit, labels=labels, axis=2), labels
-
+        loss = self.sequence_loss_fn(chars_logits, labels)
+        return loss, labels
 
     def sequence_loss_fn(self, chars_logits, chars_labels):
         """Loss function for char sequence.
@@ -138,41 +135,34 @@ class ReaderModel(tf.keras.Model):
         A Tensor with shape [batch_size] - the log-perplexity for each sequence.
         """
         mparams = self._mparams['sequence_loss_fn']
-        if mparams.label_smoothing > 0:
-            smoothed_one_hot_labels = self.label_smoothing_regularization(
-                chars_labels, mparams.label_smoothing)
-            # labels_list = tf.unstack(smoothed_one_hot_labels, axis=1)
-            labels_list = smoothed_one_hot_labels
-        else:
-            # NOTE: in case of sparse softmax we are not using one-hot
-            # encoding.
-            # labels_list = tf.unstack(chars_labels, axis=1)
-            labels_list = chars_labels
-
         batch_size, seq_length, _ = chars_logits.shape.as_list()
         if mparams.ignore_nulls:
             weights = tf.ones((batch_size, seq_length), dtype=tf.float32)
         else:
-            # Suppose that reject character is the last in the charset.
+            # Suppose that reject character is always 0.
             reject_char = tf.constant(
-                self.num_char_classes - 1,
+                0,
                 shape=(batch_size, seq_length),
                 dtype=tf.int64)
             known_char = tf.not_equal(chars_labels, reject_char)
             weights = tf.cast(known_char, dtype=tf.float32)
+        
+        if mparams.label_smoothing > 0:
+            chars_labels = self.label_smoothing_regularization(
+                chars_labels, mparams.label_smoothing)
+        else:
+            chars_labels = tf.one_hot(
+                chars_labels, depth=self.num_char_classes)
 
-        # logits_list = tf.unstack(chars_logits, axis=1)
-        # weights_list = tf.unstack(weights, axis=1)
-        logits_list = chars_logits
-        weights_list = weights
-        loss = tfa.seq2seq.sequence_loss(
-            logits_list,
-            labels_list,
-            weights_list,
-            softmax_loss_function=self.get_softmax_loss_fn(
-                mparams.label_smoothing),
-            average_across_timesteps=mparams.average_across_timesteps)
-        return loss
+        crossent = tf.nn.softmax_cross_entropy_with_logits(
+            logits=chars_logits, labels=chars_labels, axis=2)
+        crossent *= weights
+        # crossent = tf.reduce_sum(
+        #     input_tensor=crossent, axis=1)
+        # total_size = tf.reduce_sum(
+        #     input_tensor=weights, axis=1)
+        # crossent = tf.math.divide_no_nan(crossent, total_size)
+        return crossent
 
     def label_smoothing_regularization(self, chars_labels, weight=0.1):
         """Applies a label smoothing regularization.
