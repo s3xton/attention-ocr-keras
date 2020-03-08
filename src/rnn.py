@@ -10,22 +10,18 @@ class ChaRNN(layers.Layer):
     '''
 
     def __init__(self, rnn_size, seq_length, num_char_classes):
-        super(ChaRNN, self).__init__()
+        super().__init__()
         self.rnn_size = rnn_size
         self.num_char_classes = num_char_classes
         self.seq_length = tf.constant(seq_length)
         self.cell = layers.LSTMCell(self.rnn_size)
         self.dense = layers.Dense(self.num_char_classes)
-        self._char_logits = {}
-
-        w_init = tf.random_normal_initializer()
-        self._softmax_w = tf.Variable(initial_value=w_init(shape=(self.rnn_size, self.num_char_classes),
-                                                           dtype='float32'),
-                                      trainable=True)
-        self._softmax_b = tf.Variable(initial_value=w_init(shape=(self.num_char_classes,),
-                                                           dtype='float32'),
-                                      trainable=True)
-
+        self._softmax_w = self.add_weight(shape=(self.rnn_size, self.num_char_classes),
+                                          initializer='random_normal',
+                                          trainable=True)
+        self._softmax_b = self.add_weight(shape=(self.num_char_classes,),
+                                          initializer='zeros',
+                                          trainable=True)
 
     def call(self, inputs):
         f_pool, ground_truth = inputs
@@ -47,17 +43,17 @@ class ChaRNN(layers.Layer):
             # Softmax for the logits then OH encode
             output = self.char_logit(output)
             outputs = outputs.write(t, output)
-            
+
             # If training, ground truth will be passed and should be used
             # for autoregression, for inference use actual network out
             if ground_truth is not None:
-                prev_output = tf.reshape(tf.one_hot(ground_truth[:, t], depth=self.num_char_classes), shape=[
+                char = ground_truth[:, t]
+                prev_output = tf.reshape(tf.one_hot(char, depth=self.num_char_classes), shape=[
                                          batch_size, self.num_char_classes])
             else:
                 output = self.char_one_hot(output)
                 prev_output = output
 
-        
         sequence_output = tf.transpose(outputs.stack(), [1, 0, 2])
         return sequence_output, state
 
@@ -75,7 +71,8 @@ class ChaRNN(layers.Layer):
         # In case when features_num != seq_length, we just pick a subset of image
         # features, this choice is arbitrary and there is no intuitive geometrical
         # interpretation. If features_num is not dividable by seq_length there will
-        f_slice = tf.slice(f_pool, [0, char_index, 0], [-1, slice_len, -1])
+        start = char_index * slice_len
+        f_slice = f_pool[:, start:start + slice_len, :]
         feature = tf.reshape(f_slice, [batch_size, -1])
         return feature
 
@@ -88,8 +85,6 @@ class ChaRNN(layers.Layer):
         Returns:
         A tensor with shape [batch_size, num_char_classes]
         """
-        # if char_index not in self._char_logits:
-        #     self._char_logits[char_index] = inputs * self._softmax_w + self._softmax_b
         return tf.matmul(inputs, self._softmax_w) + self._softmax_b
 
     def char_one_hot(self, logit):

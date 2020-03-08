@@ -39,7 +39,7 @@ def default_mparams():
             lstm_state_clip_value=10.0),
         'sequence_loss_fn':
         SequenceLossParams(
-            label_smoothing=0.1,
+            label_smoothing=0,
             ignore_nulls=False,
             average_across_timesteps=False),
         'encode_coordinates_fn': EncodeCoordinatesParams(enabled=False)

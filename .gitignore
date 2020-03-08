@@ -1,4 +1,6 @@
-data
+data/train
+data/val
+data/test
 logdir
 .devcontainer
 *.pyc

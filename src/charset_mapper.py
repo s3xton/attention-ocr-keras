@@ -35,7 +35,8 @@ class CharsetMapper(object):
                 text: a tensor with shape [batch_size,]
             """
         char_seq = tf.strings.bytes_split(text)
-        char_seq = tf.concat([char_seq, [['?'] * self.max_sequence_length]], axis=0)
+        char_seq = tf.concat(
+            [char_seq, [['?'] * self.max_sequence_length]], axis=0)
         dense_seq = tf.sparse.to_dense(char_seq.to_sparse(), default_value='?')
         dense_seq = dense_seq[:-1, :]
         return self.table_text.lookup(dense_seq)

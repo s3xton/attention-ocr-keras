@@ -4,20 +4,20 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 import utils
 from model_parameters import default_mparams, OutputEndpoints
-from tensorflow.keras.layers import Dense, Flatten, Conv2D
 from tensorflow.keras import Model
 from tensorflow.keras.applications.inception_resnet_v2 import InceptionResNetV2, preprocess_input
 from charset_mapper import CharsetMapper
 from rnn import ChaRNN
 
 
-class ReaderModel(tf.keras.Model):
-    def __init__(self, input_shape, seq_length, rnn_size, charset):
-        super(ReaderModel, self).__init__()
+class OCRModel(tf.keras.Model):
+    def __init__(self, input_shape, seq_length, rnn_size, charset, num_views):
+        super().__init__()
         self._mparams = default_mparams()
         self.num_char_classes = len(charset)
         self.seq_length = seq_length
         self.charset = charset
+        self.num_views = num_views
 
         self.feature_enc = InceptionResNetV2(
             weights='imagenet', input_shape=input_shape, include_top=False)
@@ -25,6 +25,7 @@ class ReaderModel(tf.keras.Model):
             self.feature_enc.get_layer('mixed_6a').output]
         self.feature_enc.trainable = False
         self.rnn = ChaRNN(rnn_size, self.seq_length, self.num_char_classes)
+
         self.character_mapper = CharsetMapper(self.charset, self.seq_length)
 
     def call(self, x):
@@ -33,11 +34,12 @@ class ReaderModel(tf.keras.Model):
         input_image, ground_truth = x
 
         # Encode the image using resnet
-        f = self.feature_enc(input_image)
+        f_views = [self.feature_enc(x) for x in tf.split(
+            input_image, self.num_views, axis=2)]
 
         # Add the spacial coords
-        f_enc = self.encode_coords(f)
-        f_pool = self.pool_views(f_enc)
+        f_views_enc = [self.encode_coords(f_view) for f_view in f_views]
+        f_pool = self.pool_views(f_views_enc)
 
         # Generate the logits from the sequential model
         if ground_truth is not None:
@@ -55,35 +57,37 @@ class ReaderModel(tf.keras.Model):
             predicted_scores=predicted_scores,
             predicted_text=predicted_text)
 
-    def encode_coords(self, f):
+    def encode_coords(self, f_view):
         """Adds one-hot encoding of coordinates to different views in the networks.
         For each "pixel" of a feature map it adds a onehot encoded x and y
         coordinates.
         Args:
-        net: a tensor of shape=[batch_size, height, width, num_features]
+        f_view: a tensor of shape=[batch_size, height, width, num_features]
         Returns:
         a tensor with the same height and width, but altered feature_size.
         """
-        batch_size, h, w, _ = f.shape
+        batch_size, h, w, _ = f_view.shape
         x, y = tf.meshgrid(tf.range(w), tf.range(h))
         w_loc = tf.one_hot(x, depth=w)
         h_loc = tf.one_hot(y, depth=h)
         loc = tf.concat([h_loc, w_loc], 2)
-        loc = tf.tile(tf.expand_dims(loc, 0), [batch_size, 1, 1, 1])
-        return tf.concat([f, loc], 3)
+        loc = tf.tile(tf.expand_dims(loc, 0),
+                      tf.convert_to_tensor([batch_size, 1, 1, 1]))
+        return tf.concat([f_view, loc], 3)
 
-    def pool_views(self, f_enc):
+    def pool_views(self, f_views_enc):
         """Combines output of multiple convolutional towers into a single tensor.
         It stacks towers one on top another (in height dim) in a 4x1 grid.
         The order is arbitrary design choice and shouldn't matter much.
         Args:
-        nets: list of tensors of shape=[batch_size, height, width, num_features].
+        f_views_enc: list of tensors of shape=[batch_size, height, width, num_features].
         Returns:
         A tensor of shape [batch_size, seq_length, features_size].
         """
-        batch_size = f_enc.shape[0]
-        feature_size = f_enc.shape[3]
-        return tf.reshape(f_enc, [batch_size, -1, feature_size])
+        merged = tf.concat(f_views_enc, 1)
+        batch_size = merged.shape[0]
+        feature_size = merged.shape[3]
+        return tf.reshape(merged, [batch_size, -1, feature_size])
 
     def char_predictions(self, chars_logit):
         """Returns confidence scores (softmax values) for predicted characters.
@@ -112,8 +116,8 @@ class ReaderModel(tf.keras.Model):
     def loss(self, labels, chars_logits):
         """Creates all losses required to train the model.
         Args:
-        data: InputEndpoints namedtuple.
-        endpoints: Model namedtuple.
+        labels: labels as strings
+        chars_logits: the output of the model as logits
         Returns:
         Total loss.
         """
@@ -146,7 +150,7 @@ class ReaderModel(tf.keras.Model):
                 dtype=tf.int64)
             known_char = tf.not_equal(chars_labels, reject_char)
             weights = tf.cast(known_char, dtype=tf.float32)
-        
+
         if mparams.label_smoothing > 0:
             chars_labels = self.label_smoothing_regularization(
                 chars_labels, mparams.label_smoothing)
@@ -157,11 +161,6 @@ class ReaderModel(tf.keras.Model):
         crossent = tf.nn.softmax_cross_entropy_with_logits(
             logits=chars_logits, labels=chars_labels, axis=2)
         crossent *= weights
-        # crossent = tf.reduce_sum(
-        #     input_tensor=crossent, axis=1)
-        # total_size = tf.reduce_sum(
-        #     input_tensor=weights, axis=1)
-        # crossent = tf.math.divide_no_nan(crossent, total_size)
         return crossent
 
     def label_smoothing_regularization(self, chars_labels, weight=0.1):
@@ -179,24 +178,3 @@ class ReaderModel(tf.keras.Model):
         pos_weight = 1.0 - weight
         neg_weight = weight / self.num_char_classes
         return one_hot_labels * pos_weight + neg_weight
-
-    def get_softmax_loss_fn(self, label_smoothing):
-        """Returns sparse or dense loss function depending on the label_smoothing.
-            Args:
-            label_smoothing: weight for label smoothing
-            Returns:
-            a function which takes labels and predictions as arguments and returns
-            a softmax loss for the selected type of labels (sparse or dense).
-            """
-        if label_smoothing > 0:
-
-            def loss_fn(labels, logits):
-                return (tf.nn.softmax_cross_entropy_with_logits(
-                    logits=logits, labels=labels))
-        else:
-
-            def loss_fn(labels, logits):
-                return tf.nn.sparse_softmax_cross_entropy_with_logits(
-                    logits=logits, labels=labels)
-
-        return loss_fn
