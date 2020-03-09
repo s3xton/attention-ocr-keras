@@ -5,7 +5,7 @@ import tensorflow as tf
 from os.path import join, dirname
 
 
-DEFAULT_DATASET_DIR = join(dirname(dirname(__file__)), 'data')
+DEFAULT_DATASET_DIR = join(dirname(dirname(__file__)), 'data/fsns')
 
 # The dataset configuration, should be used only as a default value.
 DEFAULT_CONFIG = {

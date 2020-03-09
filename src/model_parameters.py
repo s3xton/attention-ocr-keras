@@ -5,7 +5,7 @@ OutputEndpoints = collections.namedtuple('OutputEndpoints', [
     'predicted_text'
 ])
 
-# TODO(gorban): replace with tf.HParams when it is released.
+# TODO: replace with tf.HParams when it is released.
 ModelParams = collections.namedtuple('ModelParams', [
     'num_char_classes', 'seq_length', 'num_views', 'null_code'
 ])

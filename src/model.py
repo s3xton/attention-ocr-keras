@@ -1,13 +1,9 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-import logging
 import tensorflow as tf
-import tensorflow_addons as tfa
-import utils
-from model_parameters import default_mparams, OutputEndpoints
-from tensorflow.keras import Model
-from tensorflow.keras.applications.inception_resnet_v2 import InceptionResNetV2, preprocess_input
-from charset_mapper import CharsetMapper
 from rnn import ChaRNN
+from tensorflow.keras import Model
+from charset_mapper import CharsetMapper
+from model_parameters import default_mparams, OutputEndpoints
+from tensorflow.keras.applications.inception_resnet_v2 import InceptionResNetV2, preprocess_input
 
 
 class OCRModel(tf.keras.Model):
@@ -34,7 +30,7 @@ class OCRModel(tf.keras.Model):
         input_image, ground_truth = x
 
         # Encode the image using resnet
-        f_views = [self.feature_enc(x) for x in tf.split(
+        f_views = [self.feature_enc(preprocess_input(x)) for x in tf.split(
             input_image, self.num_views, axis=2)]
 
         # Add the spacial coords
@@ -104,7 +100,7 @@ class OCRModel(tf.keras.Model):
             tensor
             with shape [batch_size x seq_length].
         """
-        log_prob = utils.logits_to_log_prob(chars_logit)
+        log_prob = self.logits_to_log_prob(chars_logit)
         ids = tf.cast(tf.argmax(log_prob, axis=2),
                       tf.int32, name='predicted_chars')
         mask = tf.cast(tf.one_hot(ids, self.num_char_classes), tf.bool)
@@ -178,3 +174,27 @@ class OCRModel(tf.keras.Model):
         pos_weight = 1.0 - weight
         neg_weight = weight / self.num_char_classes
         return one_hot_labels * pos_weight + neg_weight
+
+    def logits_to_log_prob(self, logits):
+        """Computes log probabilities using numerically stable trick.
+        This uses two numerical stability tricks:
+        1) softmax(x) = softmax(x - c) where c is a constant applied to all
+        arguments. If we set c = max(x) then the softmax is more numerically
+        stable.
+        2) log softmax(x) is not numerically stable, but we can stabilize it
+        by using the identity log softmax(x) = x - log sum exp(x)
+        Args:
+            logits: Tensor of arbitrary shape whose last dimension contains logits.
+        Returns:
+            A tensor of the same shape as the input, but with corresponding log
+            probabilities.
+        """
+
+        reduction_indices = len(logits.shape.as_list()) - 1
+        max_logits = tf.math.reduce_max(
+            logits, axis=reduction_indices, keepdims=True)
+        safe_logits = tf.subtract(logits, max_logits)
+        sum_exp = tf.math.reduce_sum(
+            tf.exp(safe_logits), axis=reduction_indices, keepdims=True)
+        log_probs = tf.math.subtract(safe_logits, tf.math.log(sum_exp))
+        return log_probs

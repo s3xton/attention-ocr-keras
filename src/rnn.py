@@ -1,6 +1,6 @@
-from tensorflow.keras import layers
-import tensorflow as tf
 import sys
+import tensorflow as tf
+from tensorflow.keras import layers
 
 
 class ChaRNN(layers.Layer):

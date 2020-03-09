@@ -1,11 +1,9 @@
 import sys
-
-from timebudget import timebudget
-import tensorflow_addons as tfa
-import tensorflow as tf
-from os.path import join
 import time
+import tensorflow as tf
 from datetime import datetime
+from os.path import join
+from timebudget import timebudget
 
 
 class Trainer(object):
