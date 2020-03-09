@@ -16,10 +16,12 @@ class ChaRNN(layers.Layer):
         self.seq_length = tf.constant(seq_length)
         self.cell = layers.LSTMCell(self.rnn_size)
         self.dense = layers.Dense(self.num_char_classes)
-        self._softmax_w = self.add_weight(shape=(self.rnn_size, self.num_char_classes),
+        self._softmax_w = self.add_weight(name='softmax_w',
+                                          shape=(self.rnn_size, self.num_char_classes),
                                           initializer='random_normal',
                                           trainable=True)
-        self._softmax_b = self.add_weight(shape=(self.num_char_classes,),
+        self._softmax_b = self.add_weight(name='softmax_b',
+                                          shape=(self.num_char_classes,),
                                           initializer='zeros',
                                           trainable=True)
 

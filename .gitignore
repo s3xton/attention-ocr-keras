@@ -1,6 +1,5 @@
-data/train
-data/val
-data/test
+data/fsns
+data/fsns-sample
 logdir
 .devcontainer
 *.pyc

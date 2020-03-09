@@ -19,10 +19,10 @@ DEFAULT_CONFIG = {
         #     'size': 20404,
         #     'pattern': 'test/test*'
         # },
-        # 'validation': {
-        #     'size': 16150,
-        #     'pattern': 'validation/validation*'
-        # }
+        'validation': {
+            'size': 252, #16150,
+            'pattern': 'validation/validation*'
+        }
     },
     'charset_filename': 'charset_size=134.txt',
     'image_shape': (150, 150, 3),

@@ -141,7 +141,7 @@ class OCRModel(tf.keras.Model):
         else:
             # Suppose that reject character is always 0.
             reject_char = tf.constant(
-                0,
+                self.character_mapper.null_id,
                 shape=(batch_size, seq_length),
                 dtype=tf.int64)
             known_char = tf.not_equal(chars_labels, reject_char)

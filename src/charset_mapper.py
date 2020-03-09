@@ -8,7 +8,7 @@ class CharsetMapper(object):
     Make sure you call tf.tables_initializer().run() as part of the init op.
     """
 
-    def __init__(self, charset, max_sequence_length, default_character='?'):
+    def __init__(self, charset, max_sequence_length, null_char=u'\u2591', null_id=133):
         """Creates a lookup table.
         Args:
             charset: a dictionary with id-to-character mapping.
@@ -16,11 +16,13 @@ class CharsetMapper(object):
         ids_tensor = tf.constant(list(charset.keys()), dtype=tf.int64)
         chars_tensor = tf.constant(list(charset.values()), dtype=tf.string)
         self.max_sequence_length = max_sequence_length
+        self.null_char = null_char
+        self.null_id = null_id
         self.table_ids = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(ids_tensor, chars_tensor, key_dtype=tf.int64, value_dtype=tf.string), default_character)
+            tf.lookup.KeyValueTensorInitializer(ids_tensor, chars_tensor, key_dtype=tf.int64, value_dtype=tf.string), null_char)
 
         self.table_text = tf.lookup.StaticHashTable(
-            tf.lookup.KeyValueTensorInitializer(chars_tensor, ids_tensor, key_dtype=tf.string, value_dtype=tf.int64), 0)
+            tf.lookup.KeyValueTensorInitializer(chars_tensor, ids_tensor, key_dtype=tf.string, value_dtype=tf.int64), null_id)
 
     def get_text(self, ids):
         """Returns a string corresponding to a sequence of character ids.
@@ -36,7 +38,7 @@ class CharsetMapper(object):
             """
         char_seq = tf.strings.bytes_split(text)
         char_seq = tf.concat(
-            [char_seq, [['?'] * self.max_sequence_length]], axis=0)
-        dense_seq = tf.sparse.to_dense(char_seq.to_sparse(), default_value='?')
+            [char_seq, [[self.null_char] * self.max_sequence_length]], axis=0)
+        dense_seq = tf.sparse.to_dense(char_seq.to_sparse(), default_value=self.null_char)
         dense_seq = dense_seq[:-1, :]
         return self.table_text.lookup(dense_seq)
