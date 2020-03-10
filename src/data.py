@@ -12,7 +12,7 @@ DEFAULT_CONFIG = {
     'name': 'FSNS',
     'splits': {
         'train': {
-            'size': 1974,  # 1044868,
+            'size': 1044868, # 1974,
             'pattern': 'train/train*'
         },
         # 'test': {
@@ -20,7 +20,7 @@ DEFAULT_CONFIG = {
         #     'pattern': 'test/test*'
         # },
         'validation': {
-            'size': 252, #16150,
+            'size': 16150, # 252, 
             'pattern': 'validation/validation*'
         }
     },

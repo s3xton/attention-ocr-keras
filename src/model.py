@@ -119,7 +119,10 @@ class OCRModel(tf.keras.Model):
         """
         labels = self.character_mapper.get_ids(labels)
         loss = self.sequence_loss_fn(chars_logits, labels)
-        return loss, labels
+
+        # sum loss over batch
+        total_loss = tf.reduce_sum(loss)
+        return total_loss, labels
 
     def sequence_loss_fn(self, chars_logits, chars_labels):
         """Loss function for char sequence.
@@ -157,7 +160,8 @@ class OCRModel(tf.keras.Model):
         crossent = tf.nn.softmax_cross_entropy_with_logits(
             logits=chars_logits, labels=chars_labels, axis=2)
         crossent *= weights
-        return crossent
+        loss = tf.math.reduce_sum(crossent, axis=1)
+        return loss
 
     def label_smoothing_regularization(self, chars_labels, weight=0.1):
         """Applies a label smoothing regularization.

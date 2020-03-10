@@ -3,23 +3,78 @@ import time
 import math
 import tensorflow as tf
 import numpy as np
+import pandas as pd
 from datetime import datetime
-from os.path import join
+from os.path import join, exists
+from os import makedirs
 from timebudget import timebudget
+from tensorflow.python.framework.errors_impl import NotFoundError
 
 
 class Trainer(object):
-    def __init__(self, model, null_code, checkpoint_file='./checkpoint'):
-        # self.optimizer = tf.compat.v1.train.MomentumOptimizer(0.004, 0.9)
-        self.optimizer = tf.keras.optimizers.Adadelta(learning_rate=0.001)
+
+    def __init__(self, model, null_code, output_path='/tmp/attention-ocr-keras'):
+        self.optimizer = tf.compat.v1.train.MomentumOptimizer(0.004, 0.9)
         self.loss_history = []
         self.model = model
-        self.checkpoint_file = checkpoint_file
+        self.output_path = output_path
         self.null_code = null_code
-        ts = time.time()
-        self.writer = tf.summary.create_file_writer(
-            join("logdir", datetime.fromtimestamp(ts).strftime('%Y%m%d%H%M%S')))
+        self.metrics = MetricsRecorder(['train', 'validation'], output_path)
 
+        # Setup checkpointing and load if theres an existing one
+        checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, model=self.model)
+        self.manager = tf.train.CheckpointManager(
+            checkpoint, directory=join(output_path, 'model'), max_to_keep=3)
+        checkpoint.restore(self.manager.latest_checkpoint)
+
+
+    def train_step(self, images, labels):
+        with tf.GradientTape() as tape:
+            # Call the model with the ground truth as input for autoregression
+            output_endpoint = self.model((images, labels))
+            loss_value, label_enc = self.model.loss(
+                labels, output_endpoint.chars_logit)
+
+        # Apply the gradients
+        grads = tape.gradient(loss_value, self.model.trainable_variables)
+        self.optimizer.apply_gradients(
+            zip(grads, self.model.trainable_variables))
+
+        return output_endpoint.predicted_chars, label_enc, loss_value
+
+    @timebudget
+    def train(self, epochs, data_source, batch_size):
+        try:
+            self._train(epochs, data_source, batch_size)
+        finally:
+            self.metrics.complete()
+
+    def _train(self, epochs, data_source, batch_size):
+        # Treat the train set as one big repeating dataset
+        train_set = data_source.sets['train'].batch(batch_size).repeat(epochs)
+        num_batches = math.ceil(
+            data_source.config['splits']['train']['size'] / batch_size)
+        max_global_step = num_batches * epochs
+
+        progbar = tf.keras.utils.Progbar(
+            max_global_step, stateful_metrics=['train/loss', 'train/accuracy'])
+
+        print('Beginning training.')
+        # Training loop for each batch
+        for (step, (images, labels)) in enumerate(train_set):
+            # Run a single step
+            x, y, loss = self.train_step(images, labels)
+            
+            # Record metrics
+            self.metrics.record(split='train', x=x, y=y, loss=loss, step=step)
+            progbar.update(step+1, values=[('train/loss', loss)])
+            
+            # Save the model
+            if step % 5 == 0:
+                self.manager.save(checkpoint_number=step)
+            
+        print('Training complete.')
+        
     def eval(self, val_set, num_batches, val_loss_avg, val_accuracy):
         print('Validating.')
 
@@ -51,92 +106,36 @@ class Trainer(object):
         mask = tf.cast(known_char, dtype=tf.int32)
         return mask
 
-    def train_step(self, images, labels):
-        with tf.GradientTape() as tape:
-            output_endpoint = self.model((images, labels))
 
-            # Add asserts to check the shape of the output.
-            # tf.debugging.assert_equal(chars_logit.shape, (32, 20, 26))
+class MetricsRecorder():
 
-            loss_value, label_enc = self.model.loss(
-                labels, output_endpoint.chars_logit)
+    # TODO properly implement splits in the metrics
+    def __init__(self, splits, output_path):
+        self.output_path = output_path
+        self.history_path = join(self.output_path, 'history.csv')
+        if not exists(output_path):
+            makedirs(output_path)
+        # TODO test/fix history loading and saving
+        # if exists(self.history_path):
+        #     self.history = pd.read_csv(self.history_path).to_records()
+        # else:
+        #     self.history = []
+        self.history = []
+        self.writer = tf.summary.create_file_writer(join(output_path, 'summary'))
+        
 
-        self.loss_history.append(loss_value.numpy().mean())
-        grads = tape.gradient(loss_value, self.model.trainable_variables)
-        self.optimizer.apply_gradients(
-            zip(grads, self.model.trainable_variables))
-
-        return loss_value, label_enc, output_endpoint.predicted_chars
-
-    @timebudget
-    def train(self, epochs, data_source, batch_size):
-        tf.summary.trace_on()
-        num_batches = math.ceil(
-            data_source.config['splits']['train']['size'] / batch_size)
-        best_loss = np.inf
-        epoch_loss_avg = tf.keras.metrics.Mean()
-        epoch_accuracy = tf.keras.metrics.Accuracy()
-        val_loss_avg = tf.keras.metrics.Mean()
-        val_accuracy = tf.keras.metrics.Accuracy()
-        train_set = data_source.sets['train'].batch(batch_size)
-
-        print('Beginning training.')
-        for epoch in range(epochs):
-            progbar = tf.keras.utils.Progbar(
-                num_batches, stateful_metrics=['train/loss', 'train/accuracy'])
-
-            # Training loop for each batch
-            for (batch, (images, labels)) in enumerate(train_set):
-                # Optimise the model
-                loss_value, label_enc, predicted_chars = self.train_step(
-                    images, labels)
-
-                # Record the training loss and accuracy
-                epoch_loss_avg(loss_value)
-                mask = self._get_mask(label_enc)
-                epoch_accuracy(label_enc, predicted_chars, sample_weight=mask)
-
-                # Update the progress bar
-                progbar.update(
-                    batch+1, values=[('train/loss', loss_value), ('train/accuracy', epoch_accuracy.result())])
-
-            # Evaluate the model
-            val_batches = math.ceil(
-                data_source.config['splits']['validation']['size'] / batch_size)
-            self.eval(data_source.sets['validation'].batch(batch_size), val_batches, val_loss_avg, val_accuracy)
-
-            # Write metrics
-            with self.writer.as_default():
-                tf.summary.scalar(
-                    'train/loss', epoch_loss_avg.result(), step=epoch)
-                tf.summary.scalar(
-                    'train/accuracy', epoch_accuracy.result(), step=epoch)
-                tf.summary.scalar(
-                    'val/loss', val_loss_avg.result(), step=epoch)
-                tf.summary.scalar(
-                    'val/accuracy', val_accuracy.result(), step=epoch)
-            self.writer.flush()
-
-            log = "Epoch {:03d}: train/loss: {:.3f}, train/accuracy: {:.3%}, val/loss: {:.3f}, val/accuracy: {:.3%}"
-            print(log.format(epoch,
-                             epoch_loss_avg.result(),
-                             epoch_accuracy.result(),
-                             val_loss_avg.result(),
-                             val_accuracy.result()))
-            
-            new_loss = val_loss_avg.result().numpy()
-            if new_loss < best_loss:
-                print("Saving new model.")
-                self.model.save_weights(self.checkpoint_file, overwrite=True)
-                best_loss = new_loss
-
-            # Reset the metrics between epochs
-            epoch_loss_avg.reset_states()
-            epoch_accuracy.reset_states()
-            val_loss_avg.reset_states()
-            val_accuracy.reset_states()
-
+    def record(self, split, x, y, loss, step):
+        history_step = [('step', step), ('loss', loss)]
+        
         with self.writer.as_default():
-            tf.summary.trace_export("graph", step=0)
+            tf.summary.scalar(
+                '{}/loss'.format(split), loss, step=step)
+        self.writer.flush()
 
-        print('Training complete.')
+        self.history.append(history_step)
+
+    def complete(self):
+        history = pd.DataFrame.from_records(self.history)
+        history.to_csv(self.history_path, index=False)
+        self.writer.close()
+
